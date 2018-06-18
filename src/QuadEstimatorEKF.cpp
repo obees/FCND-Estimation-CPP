@@ -93,13 +93,18 @@ void QuadEstimatorEKF::UpdateFromIMU(V3F accel, V3F gyro)
   // (replace the code below)
   // make sure you comment it out when you add your own code -- otherwise e.g. you might integrate yaw twice
 
-  float predictedPitch = pitchEst + dtIMU * gyro.y;
-  float predictedRoll = rollEst + dtIMU * gyro.x;
-  ekfState(6) = ekfState(6) + dtIMU * gyro.z;	// yaw
+    // Using the Quaternion class initialized with current attitude estimate (rollEst, pitchEst and ekfState(6))
+    Quaternion<float> q1 = Quaternion<float>::FromEuler123_RPY(rollEst, pitchEst, ekfState(6));
+    
+    // Integrate pqr in gyro in the quaternion
+    q1.IntegrateBodyRate(gyro,dtIMU);
+    
+    // Convert back from quaternion to Euler angles
+    V3D eulerRPY = q1.ToEulerRPY();
 
-  // normalize yaw to -pi .. pi
-  if (ekfState(6) > F_PI) ekfState(6) -= 2.f*F_PI;
-  if (ekfState(6) < -F_PI) ekfState(6) += 2.f*F_PI;
+    float predictedPitch = eulerRPY.y;
+    float predictedRoll  = eulerRPY.x;
+    ekfState(6) = eulerRPY.z;
 
   /////////////////////////////// END STUDENT CODE ////////////////////////////
 
@@ -162,6 +167,33 @@ VectorXf QuadEstimatorEKF::PredictState(VectorXf curState, float dt, V3F accel, 
 
   ////////////////////////////// BEGIN STUDENT CODE ///////////////////////////
 
+    // Build predictedState from curState
+    // curState(0) : x position in global frame
+    // curState(1) : y position in global frame
+    // curState(2) : y position in global frame
+    // curState(3) : x velocity in global frame
+    // curState(4) : y velocity in global frame
+    // curState(5) : z velocity in global frame
+    // curState(6) : yaw angle in global frame
+
+    // position update in global frame
+    predictedState(0) = curState(0) + curState(3) * dt; // x position update in global frame
+    predictedState(1) = curState(1) + curState(4) * dt; // y position update in global frame
+    predictedState(2) = curState(2) + curState(5) * dt; // z position update in global frame
+
+    // first convert accel vector from body frame to global frame
+    V3F globalFrameAccel = attitude.Rotate_BtoI(accel);
+
+    // velocity update in global frame
+    predictedState(3) = curState(3) + globalFrameAccel.x * dt; // x velocity update in global frame
+    predictedState(4) = curState(4) + globalFrameAccel.y * dt; // y velocity update in global frame
+    predictedState(5) = curState(5) + (globalFrameAccel.z - CONST_GRAVITY) * dt; // z velocity update in global frame
+
+    // first convert gyro vector from body frame to global frame
+    V3F globalFrameGyro = attitude.Rotate_BtoI(gyro);
+
+    // yaw update in global frame
+    predictedState(6) = curState(6) + globalFrameGyro.z * dt; // yaw update in global frame
 
   /////////////////////////////// END STUDENT CODE ////////////////////////////
 
@@ -189,6 +221,29 @@ MatrixXf QuadEstimatorEKF::GetRbgPrime(float roll, float pitch, float yaw)
 
   ////////////////////////////// BEGIN STUDENT CODE ///////////////////////////
 
+    float cPhi = cosf(roll);
+    float sPhi = sinf(roll);
+    
+    float cThe = cosf(pitch);
+    float sThe = sinf(pitch);
+    
+    float cPsi = cosf(yaw);
+    float sPsi = sinf(yaw);
+    
+    
+    
+    RbgPrime(0,0) = -cThe * sPsi; // −cosθsinψ
+    RbgPrime(0,1) = -sPhi * sThe * sPsi - cPhi * cPsi; // −sinφsinθsinψ − cosφcosψ
+    RbgPrime(0,2) = -cPhi * sThe * sPsi + sPhi * cPsi; // −cosφsinθsinψ + sinφcosψ
+    
+    RbgPrime(1,0) = cThe * cPsi; // cosθcosψ
+    RbgPrime(1,1) = sPhi * sThe * cPsi - cPhi * sPsi; // sinφsinθcosψ−cosφsinψ
+    RbgPrime(1,2) = cPhi * sThe * cPsi + sPhi * sPsi; // cosφsinθcosψ+sinφsinψ
+    
+    RbgPrime(2,0) = 0.0f;
+    RbgPrime(2,1) = 0.0f;
+    RbgPrime(2,2) = 0.0f;
+    
 
   /////////////////////////////// END STUDENT CODE ////////////////////////////
 
@@ -235,7 +290,18 @@ void QuadEstimatorEKF::Predict(float dt, V3F accel, V3F gyro)
 
   ////////////////////////////// BEGIN STUDENT CODE ///////////////////////////
 
-
+    // update gPrime values from the Jacobian Matrix
+    gPrime(0,3) = dt;
+    gPrime(1,4) = dt;
+    gPrime(2,5) = dt;
+    
+    gPrime(3,6) = (RbgPrime(0,0) * accel.x + RbgPrime(0,1) * accel.y + RbgPrime(0,1) * accel.z) * dt;
+    gPrime(4,6) = (RbgPrime(1,0) * accel.x + RbgPrime(1,1) * accel.y + RbgPrime(1,1) * accel.z) * dt;
+    gPrime(5,6) = (RbgPrime(2,0) * accel.x + RbgPrime(2,1) * accel.y + RbgPrime(2,1) * accel.z) * dt;
+    
+    // from the covariance update formula
+    ekfCov = gPrime * ekfCov * gPrime.transpose() + Q;
+    
   /////////////////////////////// END STUDENT CODE ////////////////////////////
 
   ekfState = newState;
@@ -259,7 +325,24 @@ void QuadEstimatorEKF::UpdateFromGPS(V3F pos, V3F vel)
   //  - The GPS measurement covariance is available in member variable R_GPS
   //  - this is a very simple update
   ////////////////////////////// BEGIN STUDENT CODE ///////////////////////////
-
+    
+    // Set the Identity part by hand
+    hPrime(0,0) = 1;
+    hPrime(1,1) = 1;
+    hPrime(2,2) = 1;
+    hPrime(3,3) = 1;
+    hPrime(4,4) = 1;
+    hPrime(5,5) = 1;
+    
+    // Get measurements
+    zFromX(0) = ekfState(0);
+    zFromX(1) = ekfState(1);
+    zFromX(2) = ekfState(2);
+    zFromX(3) = ekfState(3);
+    zFromX(4) = ekfState(4);
+    zFromX(5) = ekfState(5);
+    
+    
   /////////////////////////////// END STUDENT CODE ////////////////////////////
 
   Update(z, hPrime, R_GPS, zFromX);
@@ -280,7 +363,21 @@ void QuadEstimatorEKF::UpdateFromMag(float magYaw)
   //    (you don't want to update your yaw the long way around the circle)
   //  - The magnetomer measurement covariance is available in member variable R_Mag
   ////////////////////////////// BEGIN STUDENT CODE ///////////////////////////
-
+  
+    // From measurement fuction derivative
+    hPrime(0,6) = 1;
+    zFromX(0) = ekfState(6);
+    
+    // normalize yaw to -pi .. pi
+    float delta = z(0) - zFromX(0);
+    float normalizer = 2.f*F_PI;
+    if (delta > F_PI) {
+        zFromX(0) += normalizer;
+    }
+    else if (delta < -F_PI) {
+        zFromX(0) -= normalizer;
+    }
+    
 
   /////////////////////////////// END STUDENT CODE ////////////////////////////
 
