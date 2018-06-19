@@ -106,6 +106,10 @@ void QuadEstimatorEKF::UpdateFromIMU(V3F accel, V3F gyro)
     float predictedRoll  = eulerRPY.x;
     ekfState(6) = eulerRPY.z;
 
+    // normalize yaw to -pi .. pi
+    if (ekfState(6) > F_PI) ekfState(6) -= 2.f*F_PI;
+    if (ekfState(6) < -F_PI) ekfState(6) += 2.f*F_PI;
+    
   /////////////////////////////// END STUDENT CODE ////////////////////////////
 
   // CALCULATE UPDATE
@@ -190,10 +194,10 @@ VectorXf QuadEstimatorEKF::PredictState(VectorXf curState, float dt, V3F accel, 
     predictedState(5) = curState(5) + (globalFrameAccel.z - CONST_GRAVITY) * dt; // z velocity update in global frame
 
     // first convert gyro vector from body frame to global frame
-    V3F globalFrameGyro = attitude.Rotate_BtoI(gyro);
+    //V3F globalFrameGyro = attitude.Rotate_BtoI(gyro);
 
     // yaw update in global frame
-    predictedState(6) = curState(6) + globalFrameGyro.z * dt; // yaw update in global frame
+    //predictedState(6) = curState(6) + globalFrameGyro.z * dt; // yaw update in global frame
 
   /////////////////////////////// END STUDENT CODE ////////////////////////////
 
